@@ -1,0 +1,13 @@
+.env
+credentials.json
+token.json
+emails.db
+venv/
+__pycache__/
+*.joblib
+.DS_Store
+template_extracted.txt
+template.docx
+Project_Report_Template_CSM216.docx
+report.doc
+build_report_part1.py
