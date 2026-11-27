@@ -84,6 +84,7 @@ def fetch_scan_history(limit=100, database_path="emails.db"):
     Retrieves logged email scan history from the database ordered chronologically descending.
     Takes the integer fetch limit and database path string, returning a list of email dictionaries.
     """
+    safe_limit = max(1, min(int(limit), 1000))
     fetch_query = """
     SELECT
         message_id,
@@ -102,7 +103,7 @@ def fetch_scan_history(limit=100, database_path="emails.db"):
     """
     with get_database_connection(database_path) as connection:
         cursor = connection.cursor()
-        cursor.execute(fetch_query, (limit,))
+        cursor.execute(fetch_query, (safe_limit,))
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
@@ -112,22 +113,31 @@ def update_emails_status_batch(message_ids, new_status="TRASHED", database_path=
     Updates the status attribute for a list of message IDs, such as marking moved emails as TRASHED.
     Takes a list of message ID strings, status string, and database path, returning modified rows count.
     """
-    if not message_ids:
+    allowed_statuses = {"INBOX", "TRASHED", "ARCHIVED", "SCANNED"}
+    sanitized_status = str(new_status).upper().strip()
+    if sanitized_status not in allowed_statuses:
+        sanitized_status = "TRASHED"
+
+    clean_message_ids = [str(mid).strip() for mid in message_ids if str(mid).strip()]
+    if not clean_message_ids:
         return 0
 
-    placeholders = ",".join(["?"] * len(message_ids))
-    update_query = f"""
-    UPDATE scanned_emails
-    SET status = ?
-    WHERE message_id IN ({placeholders});
-    """
-    parameters = [new_status] + list(message_ids)
-
+    total_updated = 0
+    batch_size = 100
     with get_database_connection(database_path) as connection:
         cursor = connection.cursor()
-        cursor.execute(update_query, parameters)
+        for index in range(0, len(clean_message_ids), batch_size):
+            chunk = clean_message_ids[index : index + batch_size]
+            placeholders = ",".join(["?"] * len(chunk))
+            update_query = f"""
+            UPDATE scanned_emails
+            SET status = ?
+            WHERE message_id IN ({placeholders});
+            """
+            cursor.execute(update_query, [sanitized_status] + chunk)
+            total_updated += cursor.rowcount
         connection.commit()
-        return cursor.rowcount
+        return total_updated
 
 
 def fetch_email_statistics(database_path="emails.db"):

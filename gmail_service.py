@@ -34,6 +34,10 @@ def create_credentials_file_from_keys(client_id, client_secret, output_path="cre
     }
     with open(output_path, "w", encoding="utf-8") as file:
         json.dump(oauth_structure, file, indent=2)
+    try:
+        os.chmod(output_path, 0o600)
+    except OSError:
+        pass
     return True
 
 
@@ -70,6 +74,10 @@ def get_gmail_service(credentials_path="credentials.json", token_path="token.jso
 
         with open(token_path, "w", encoding="utf-8") as token_file:
             token_file.write(credentials.to_json())
+        try:
+            os.chmod(token_path, 0o600)
+        except OSError:
+            pass
 
     return build("gmail", "v1", credentials=credentials)
 
@@ -257,10 +265,15 @@ def test_imap_connection(email_address, app_password):
     Validates user credentials against Gmail IMAP SSL server with formatted error diagnostics.
     Takes email address and app password strings, returning a tuple of boolean success and error message.
     """
+    clean_email = email_address.strip()
     clean_password = app_password.replace(" ", "").strip()
+    if "\r" in clean_email or "\n" in clean_email or "\r" in clean_password or "\n" in clean_password:
+        return False, "Security Error: Line break characters are not permitted in credentials."
+    if not clean_email or not clean_password:
+        return False, "Error: Both email address and app password are required."
     try:
         mail_client = imaplib.IMAP4_SSL("imap.gmail.com")
-        mail_client.login(email_address.strip(), clean_password)
+        mail_client.login(clean_email, clean_password)
         mail_client.logout()
         return True, "Successfully authenticated with Gmail!"
     except Exception as error:
@@ -318,9 +331,14 @@ def fetch_inbox_emails_imap(email_address, app_password, max_results=10):
     Connects to Gmail via IMAP SSL, retrieves latest inbox messages, and parses metadata and body.
     Takes email address, app password, and integer count, returning a list of parsed email dictionaries.
     """
+    clean_email = email_address.strip()
     clean_password = app_password.replace(" ", "").strip()
+    if "\r" in clean_email or "\n" in clean_email or "\r" in clean_password or "\n" in clean_password:
+        raise ValueError("Invalid line break characters detected in credentials.")
+
+    safe_max = max(1, min(int(max_results), 100))
     mail_client = imaplib.IMAP4_SSL("imap.gmail.com")
-    mail_client.login(email_address.strip(), clean_password)
+    mail_client.login(clean_email, clean_password)
     mail_client.select("INBOX")
 
     status, search_data = mail_client.uid("search", None, "ALL")
@@ -328,8 +346,8 @@ def fetch_inbox_emails_imap(email_address, app_password, max_results=10):
         mail_client.logout()
         return []
 
-    uid_list = search_data[0].split()
-    selected_uids = uid_list[-max_results:]
+    valid_uids = [uid for uid in search_data[0].split() if uid.decode("utf-8", errors="ignore").isdigit()]
+    selected_uids = valid_uids[-safe_max:]
     selected_uids.reverse()
 
     parsed_emails = []
@@ -370,9 +388,13 @@ def move_emails_to_trash_imap(email_address, app_password, message_ids):
     Moves specified emails to Gmail Trash using IMAP Special-Use folder detection, COPY, and flags.
     Takes email address, app password, and list of message ID strings, returning a list of trashed IDs.
     """
+    clean_email = email_address.strip()
     clean_password = app_password.replace(" ", "").strip()
+    if "\r" in clean_email or "\n" in clean_email or "\r" in clean_password or "\n" in clean_password:
+        raise ValueError("Invalid line break characters detected in credentials.")
+
     mail_client = imaplib.IMAP4_SSL("imap.gmail.com")
-    mail_client.login(email_address.strip(), clean_password)
+    mail_client.login(clean_email, clean_password)
     mail_client.select("INBOX")
 
     trash_folder = find_gmail_trash_folder(mail_client)
@@ -380,6 +402,8 @@ def move_emails_to_trash_imap(email_address, app_password, message_ids):
 
     for msg_id in message_ids:
         raw_uid = msg_id.replace("imap_", "").strip()
+        if not raw_uid.isdigit():
+            continue
 
         copy_status, _ = mail_client.uid("COPY", raw_uid, trash_folder)
         if copy_status != "OK":

@@ -1,3 +1,5 @@
+import html
+import json
 import os
 import joblib
 import pandas as pd
@@ -16,12 +18,16 @@ st.set_page_config(
 @st.cache_resource
 def load_spam_model(model_path="spam_model.joblib"):
     """
-    Loads and caches the trained Scikit-Learn spam classification pipeline from disk using Joblib.
+    Safely loads and caches the trained Scikit-Learn spam classification pipeline from disk using Joblib.
     Takes the model file path string and returns the deserialized Scikit-Learn pipeline object.
     """
-    if not os.path.exists(model_path):
+    canonical_path = os.path.abspath(model_path)
+    if not os.path.isfile(canonical_path):
         return None
-    return joblib.load(model_path)
+    try:
+        return joblib.load(canonical_path)
+    except Exception:
+        return None
 
 
 def classify_emails(model_pipeline, email_records, threshold=0.50):
@@ -393,12 +399,18 @@ def load_saved_account_config(config_path=".env"):
 
 def save_account_config(email_address, app_password, config_path=".env"):
     """
-    Persists user Gmail credentials to a local configuration file for automatic future sessions.
+    Persists user Gmail credentials to a local configuration file with restricted owner-only permissions.
     Takes email address, app password, and file path, returning boolean success status.
     """
-    content = f"GMAIL_ADDRESS={email_address.strip()}\nGMAIL_APP_PASSWORD={app_password.strip()}\n"
+    clean_email = email_address.strip().replace("\r", "").replace("\n", "")
+    clean_password = app_password.strip().replace("\r", "").replace("\n", "")
+    content = f"GMAIL_ADDRESS={clean_email}\nGMAIL_APP_PASSWORD={clean_password}\n"
     with open(config_path, "w", encoding="utf-8") as file:
         file.write(content)
+    try:
+        os.chmod(config_path, 0o600)
+    except OSError:
+        pass
     return True
 
 
@@ -414,14 +426,27 @@ def clear_saved_account_config(config_path=".env"):
 
 def handle_credentials_upload(uploaded_file):
     """
-    Saves an uploaded OAuth client secrets JSON file to credentials.json in the working directory.
+    Validates uploaded JSON OAuth credentials structure and securely saves to credentials.json.
     Takes the Streamlit UploadedFile object and returns boolean success status.
     """
     if uploaded_file is None:
         return False
-    with open("credentials.json", "wb") as output_file:
-        output_file.write(uploaded_file.getbuffer())
-    return True
+    if uploaded_file.size > 50000:
+        return False
+    try:
+        content = uploaded_file.getvalue().decode("utf-8")
+        parsed = json.loads(content)
+        if not isinstance(parsed, dict) or not any(key in parsed for key in ("installed", "web")):
+            return False
+        with open("credentials.json", "w", encoding="utf-8") as output_file:
+            json.dump(parsed, output_file, indent=2)
+        try:
+            os.chmod("credentials.json", 0o600)
+        except OSError:
+            pass
+        return True
+    except Exception:
+        return False
 
 
 def render_sidebar_controls():
@@ -534,6 +559,7 @@ def render_sidebar_controls():
                         st.sidebar.success(f"Connected to {user_email.strip()}!")
                         st.rerun()
                     else:
+                        clean_message = html.escape(str(message))
                         st.sidebar.markdown(
                             f"""
                             <div style="background-color: #fee2e2; border: 2.5px solid #1a1a1a; border-radius: 14px;
@@ -542,7 +568,7 @@ def render_sidebar_controls():
                                     ⚠️ Connection Failed
                                 </div>
                                 <div style="font-weight: 600; color: #1a1a1a; font-size: 0.82rem; line-height: 1.4;">
-                                    {message}
+                                    {clean_message}
                                 </div>
                             </div>
                             """,
@@ -775,6 +801,11 @@ def render_scan_results_tab(classified_emails):
         badge_text_color = "#ffffff" if is_spam else "#1a1a1a"
         badge_text = f"-{probability:.0f}% SPAM" if is_spam else f"HAM ({100 - probability:.0f}%)"
 
+        clean_sender = html.escape(str(email.get("sender", ""))[:28])
+        clean_subject = html.escape(str(email.get("subject", "(No Subject)")))
+        clean_snippet = html.escape(str(email.get("snippet", "")))
+        clean_status = html.escape(str(status))
+
         st.markdown(
             f"""
             <div style="background-color: #fffdf5; border: 2.5px solid #1a1a1a; border-radius: 18px;
@@ -789,14 +820,14 @@ def render_scan_results_tab(classified_emails):
                         </span>
                         <span style="background-color: #1a1a1a; color: #ffffff; padding: 2px 8px; border-radius: 6px;
                                      font-weight: 800; font-size: 0.7rem; text-transform: uppercase;">
-                            {email.get('sender', '')[:28]}
+                            {clean_sender}
                         </span>
                     </div>
                     <div style="font-weight: 800; font-size: 1.15rem; color: #1a1a1a; margin-bottom: 4px;">
-                        {email.get('subject', '(No Subject)')}
+                        {clean_subject}
                     </div>
                     <div style="color: #475569; font-size: 0.88rem; font-weight: 600;">
-                        {email.get('snippet', '')}
+                        {clean_snippet}
                     </div>
                 </div>
                 <div style="text-align: right; min-width: 90px;">
@@ -804,7 +835,7 @@ def render_scan_results_tab(classified_emails):
                         {probability:.1f}%
                     </div>
                     <div style="font-size: 0.72rem; color: #64748b; font-weight: 800; text-transform: uppercase;">
-                        {status}
+                        {clean_status}
                     </div>
                 </div>
             </div>
@@ -990,6 +1021,7 @@ def main():
     st.markdown("<hr style='border: 1.5px solid #1a1a1a; margin: 24px 0;'>", unsafe_allow_html=True)
 
     active_email = controls["connected_email"]
+    clean_active_email = html.escape(str(active_email))
     action_bar_col1, action_bar_col2 = st.columns([2.2, 1.2])
 
     with action_bar_col1:
@@ -1013,7 +1045,7 @@ def main():
                             padding: 12px 18px; box-shadow: 3.5px 3.5px 0px #1a1a1a; display: flex; align-items: center; gap: 10px; margin-bottom: 18px;">
                     <span style="font-size: 1.2rem;">🟢</span>
                     <span style="color: #1a1a1a; font-weight: 800; font-size: 0.95rem;">
-                        Google OAuth Active: Connected to real Gmail ({active_email}).
+                        Google OAuth Active: Connected to real Gmail ({clean_active_email}).
                     </span>
                 </div>
                 """,
@@ -1026,7 +1058,7 @@ def main():
                             padding: 12px 18px; box-shadow: 3.5px 3.5px 0px #1a1a1a; display: flex; align-items: center; gap: 10px; margin-bottom: 18px;">
                     <span style="font-size: 1.2rem;">🟢</span>
                     <span style="color: #1a1a1a; font-weight: 800; font-size: 0.95rem;">
-                        IMAP Active: Connected to real Gmail ({active_email}).
+                        IMAP Active: Connected to real Gmail ({clean_active_email}).
                     </span>
                 </div>
                 """,
